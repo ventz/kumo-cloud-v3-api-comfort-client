@@ -1,0 +1,834 @@
+# Kumo Cloud API v3 Documentation
+
+Comprehensive API documentation for the Mitsubishi Kumo Cloud API v3.
+
+**Base URL:** `https://app-prod.kumocloud.com`
+
+**App Version:** `3.2.3`
+
+**App Build:** `1122`
+
+---
+
+## Table of Contents
+
+1. [Authentication](#authentication)
+2. [Request Headers](#request-headers)
+3. [Account Endpoints](#account-endpoints)
+4. [Site Endpoints](#site-endpoints)
+5. [Zone Endpoints](#zone-endpoints)
+6. [Device Endpoints](#device-endpoints)
+7. [Device Control](#device-control)
+8. [Notifications](#notifications)
+9. [Comfort Settings](#comfort-settings)
+10. [Real-Time Updates (Socket.IO)](#real-time-updates-socketio)
+11. [Data Reference](#data-reference)
+12. [Rate Limiting](#rate-limiting)
+
+---
+
+## Authentication
+
+### Login
+
+**POST** `/v3/login`
+
+Authenticate and obtain JWT tokens.
+
+**Request:**
+```json
+{
+  "username": "user@example.com",
+  "password": "yourpassword",
+  "appVersion": "3.2.3"
+}
+```
+
+**Response:**
+```json
+{
+  "token": {
+    "access": "<jwt_access_token>",
+    "refresh": "<jwt_refresh_token>"
+  },
+  "email": "user@example.com",
+  "userId": "<user_id>",
+  ...
+}
+```
+
+**Token Lifetimes:**
+- Access token: ~20 minutes
+- Refresh token: ~30 days
+
+### Refresh Token
+
+**POST** `/v3/refresh`
+
+Refresh an expired access token.
+
+**Headers:**
+```
+Authorization: Bearer <refresh_token>
+```
+
+**Request:**
+```json
+{
+  "refresh": "<refresh_token>"
+}
+```
+
+**Response:**
+```json
+{
+  "access": "<new_access_token>",
+  "refresh": "<new_refresh_token>"
+}
+```
+
+---
+
+## Request Headers
+
+### Required Headers (All Requests)
+
+```
+Accept: application/json
+Accept-Encoding: gzip, deflate, br
+Accept-Language: en-US,en;q=0.9
+Content-Type: application/json
+User-Agent: kumocloud/1122 CFNetwork/3860.200.71 Darwin/25.1.0
+```
+
+### Required Headers (Authenticated Requests)
+
+```
+Authorization: Bearer <access_token>
+x-app-version: 3.2.3
+app-env: prd
+```
+
+### Optional Headers
+
+```
+x-allow-cache: true
+priority: u=3, i
+```
+
+### Sentry Tracing Headers (Optional)
+
+The mobile app includes Sentry error tracking headers:
+```
+baggage: sentry-environment=prd,sentry-public_key=...,sentry-trace_id=...
+sentry-trace: <trace_id>-<span_id>
+access-control-allow-headers: sentry-trace
+```
+
+---
+
+## Account Endpoints
+
+### Get Account Info
+
+**GET** `/v3/accounts/me`
+
+Returns current user account information including preferences.
+
+**Response:**
+```json
+{
+  "id": "<user_id>",
+  "username": "user@example.com",
+  "email": "user@example.com",
+  "firstName": "...",
+  "lastName": "...",
+  "phone": "",
+  "isPersonalAccount": true,
+  "isEmailVerified": true,
+  "preferences": {
+    "celsius": false,
+    "scheduleFeatureModalSeen": true,
+    "scheduleDuplicationModalSeen": true,
+    "scheduleForMultipleZonesModalHidden": false,
+    "feedback": {
+      "type": "email",
+      "provided": true
+    },
+    "appWalkthroughs": {
+      "CreateSite": { "seen": true, "actionCompleted": true },
+      "CreateZone": { "seen": true, "actionCompleted": true },
+      "Dashboard": { "seen": true, "actionCompleted": true },
+      "Locations": { "seen": false, "actionCompleted": false }
+    },
+    "hideDashboardWelcomeSteps": true,
+    "isMinMaxSetpointsEnabled": false,
+    "weatherVisibility": {}
+  },
+  "company": null,
+  "isSalesforceIntegrated": true
+}
+```
+
+### Update Account Preferences
+
+**PUT** `/v3/accounts/preferences`
+
+Update user preferences (temperature units, UI settings, etc.).
+
+**Request:**
+```json
+{
+  "celsius": false,
+  "scheduleFeatureModalSeen": true,
+  "scheduleDuplicationModalSeen": true,
+  "scheduleForMultipleZonesModalHidden": false,
+  "feedback": { "type": "email", "provided": true },
+  "appWalkthroughs": { ... },
+  "hideDashboardWelcomeSteps": true,
+  "isMinMaxSetpointsEnabled": false,
+  "weatherVisibility": {}
+}
+```
+
+---
+
+## Site Endpoints
+
+Sites represent physical locations (homes, buildings).
+
+### List Sites
+
+**GET** `/v3/sites`
+
+Returns all sites associated with the account.
+
+**Response:**
+```json
+[
+  {
+    "id": "<site_uuid>",
+    "name": "My Home",
+    "address": { ... },
+    "timezone": "America/New_York",
+    ...
+  }
+]
+```
+
+### List Sites (Full)
+
+**GET** `/v3/sites/full`
+
+Returns sites with additional details.
+
+### Get Site Details
+
+**GET** `/v3/sites/{site_id}`
+
+### Get Site Weather
+
+**GET** `/v3/sites/{site_id}/weather`
+
+Returns current weather data for the site's location (OpenWeatherMap data).
+
+**Response:**
+```json
+{
+  "coord": { "lon": -XX.XXXX, "lat": XX.XXXX },
+  "weather": [
+    {
+      "id": 800,
+      "main": "Clear",
+      "description": "clear sky",
+      "icon": "01n"
+    }
+  ],
+  "base": "stations",
+  "main": {
+    "temp": -1.43,
+    "feels_like": -1.43,
+    "temp_min": -3.3,
+    "temp_max": -0.05,
+    "pressure": 1017,
+    "humidity": 81,
+    "sea_level": 1017,
+    "grnd_level": 1012
+  },
+  "visibility": 10000,
+  "wind": { "speed": 0, "deg": 0 },
+  "clouds": { "all": 0 },
+  "dt": 1700000000,
+  "sys": {
+    "type": 2,
+    "id": 1234567,
+    "country": "US",
+    "sunrise": 1700000000,
+    "sunset": 1700000000
+  },
+  "timezone": -18000,
+  "id": 1234567,
+  "name": "City Name",
+  "cod": 200
+}
+```
+
+### Get Kumo Station
+
+**GET** `/v3/sites/{site_id}/kumo-station?refresh=false`
+
+Returns Kumo Station info if the site has one.
+
+**Response (if not found):**
+```json
+{
+  "error": "kumoStationNotFound"
+}
+```
+
+### Get Site Groups
+
+**GET** `/v3/sites/{site_id}/groups`
+
+Returns device groups for a site.
+
+### Get Pending Transfers
+
+**GET** `/v3/sites/transfers/pending`
+
+Returns pending site transfers.
+
+### Get Preferable Contractor
+
+**GET** `/v3/site/{site_id}/preferable-contractor`
+
+Returns contractor information for the site.
+
+---
+
+## Zone Endpoints
+
+Zones are logical groupings of devices (rooms, areas).
+
+### List Zones
+
+**GET** `/v3/sites/{site_id}/zones`
+
+Returns all zones for a site with full device status.
+
+**Response:**
+```json
+[
+  {
+    "id": "<zone_uuid>",
+    "name": "Living Room",
+    "isActive": true,
+    "adapter": {
+      "id": "<adapter_uuid>",
+      "deviceSerial": "<device_serial>",
+      "isSimulator": false,
+      "roomTemp": 19,
+      "spCool": 24.5,
+      "spHeat": 18.5,
+      "spAuto": null,
+      "humidity": 37,
+      "scheduleOwner": "adapter",
+      "scheduleHoldEndTime": 0,
+      "power": 1,
+      "operationMode": "heat",
+      "previousOperationMode": "heat",
+      "connected": true,
+      "hasSensor": false,
+      "hasMhk2": true,
+      "timeZone": "America/New_York",
+      "isHeadless": false,
+      "lastStatusChangeAt": "<iso_timestamp>",
+      "createdAt": "<iso_timestamp>",
+      "updatedAt": "<iso_timestamp>"
+    },
+    "createdAt": "<iso_timestamp>",
+    "updatedAt": "<iso_timestamp>"
+  }
+]
+```
+
+### Get Zone Details
+
+**GET** `/v3/zones/{zone_id}`
+
+Returns details for a specific zone.
+
+### Get Zone Schedules
+
+**GET** `/v3/zones/{zone_id}/schedules`
+
+Returns schedules configured for a zone.
+
+### Get Zone Comfort Settings
+
+**GET** `/v3/zones/{zone_id}/comfort-settings?zoneId={zone_id}`
+
+Returns comfort settings for a zone.
+
+### Get Zone Notification Preferences
+
+**GET** `/v3/zones/{zone_id}/notification-preferences`
+
+Returns notification preferences for a zone.
+
+### Get Zone Connection History
+
+**GET** `/v3/zones/{zone_id}/connection-history?page=1`
+
+Returns paginated connection history for a zone.
+
+**Response:**
+```json
+{
+  "next": null,
+  "previous": null,
+  "count": 10,
+  "data": [
+    {
+      "start": "<iso_timestamp>",
+      "end": null,
+      "isConnected": true,
+      "uptime": "9h"
+    },
+    {
+      "start": "<iso_timestamp>",
+      "end": "<iso_timestamp>",
+      "isConnected": false,
+      "uptime": "5h"
+    }
+  ]
+}
+```
+
+---
+
+## Device Endpoints
+
+### Get Device Info
+
+**GET** `/v3/devices/{device_serial}`
+
+Returns comprehensive device information.
+
+**Response:**
+```json
+{
+  "id": "<device_uuid>",
+  "deviceSerial": "<device_serial>",
+  "rssi": -43,
+  "power": 1,
+  "operationMode": "heat",
+  "humidity": 37,
+  "scheduleOwner": "adapter",
+  "scheduleHoldEndTime": 0,
+  "fanSpeed": "auto",
+  "airDirection": "auto",
+  "roomTemp": 20,
+  "unusualFigures": 32768,
+  "twoFiguresCode": "A0",
+  "statusDisplay": 1,
+  "spCool": 24.5,
+  "spHeat": 18.5,
+  "spAuto": null,
+  "runTest": 0,
+  "activeThermistor": null,
+  "tempSource": null,
+  "isSimulator": false,
+  "serialNumber": "<unit_serial>",
+  "modelNumber": "<model_number>",
+  "ledDisabled": false,
+  "connected": true,
+  "isHeadless": false,
+  "previousOperationMode": "heat",
+  "lastStatusChangeAt": "<iso_timestamp>",
+  "createdAt": "<iso_timestamp>",
+  "updatedAt": "<iso_timestamp>",
+  "model": {
+    "id": "<model_uuid>",
+    "brand": "Mitsubishi",
+    "material": "<model_number>",
+    "basicMaterial": "<base_model>",
+    "replacementMaterial": "",
+    "materialDescription": "...",
+    "family": "MSZ",
+    "subFamily": "MSZ-GL/GS",
+    "materialGroupName": "RAC indoor",
+    "serialProfile": "ZEA",
+    "materialGroupSeries": "M-Series",
+    "isIndoorUnit": true,
+    "isDuctless": true,
+    "isSwing": null,
+    "isPowerfulMode": null,
+    "modeDescription": "INDOOR UNIT",
+    "isActive": true,
+    "frontendAnimation": "fs",
+    "gallery": {
+      "id": "<gallery_uuid>",
+      "name": "Wall mounted",
+      "imageUrl": "https://...",
+      "imageAlt": "Wall mounted"
+    }
+  },
+  "displayConfig": {
+    "filter": false,
+    "defrost": false,
+    "hotAdjust": false,
+    "standby": false
+  },
+  "timeZone": "America/New_York",
+  "collectMethod": "qr_code",
+  "realValues": {}
+}
+```
+
+### Get Device Status
+
+**GET** `/v3/devices/{device_serial}/status`
+
+Returns device configuration/status.
+
+**Response:**
+```json
+{
+  "autoModeDisable": true,
+  "firmwareVersion": "XX.XX.XX",
+  "roomTempDisplayOffset": 0,
+  "routerSsid": "<wifi_network>",
+  "routerRssi": -42,
+  "optimalStart": null,
+  "modeHeat": true,
+  "modeDry": true,
+  "receiverRelay": "MHK2",
+  "lastUpdated": "<iso_timestamp>",
+  "cryptoSerial": "<crypto_serial>",
+  "cryptoKeySet": "<key_set>"
+}
+```
+
+### Get Device Profile
+
+**GET** `/v3/devices/{device_serial}/profile`
+
+Returns device capabilities and profile information.
+
+### Get Device Initial Settings
+
+**GET** `/v3/devices/{device_serial}/initial-settings`
+
+Returns device initial/default settings.
+
+### Get Device Kumo Properties
+
+**GET** `/v3/devices/{device_serial}/kumo-properties`
+
+Returns Kumo-specific device properties.
+
+---
+
+## Device Control
+
+### Send Command (Primary Control Endpoint)
+
+**POST** `/v3/devices/send-command`
+
+This is the primary endpoint for controlling devices. All setpoint and mode changes go through this endpoint.
+
+**Request:**
+```json
+{
+  "deviceSerial": "<device_serial>",
+  "commands": {
+    "operationMode": "heat",
+    "spCool": 24.5,
+    "spHeat": 18.5
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "devices": ["<device_serial>"]
+}
+```
+
+### Available Commands
+
+| Command | Type | Description | Values |
+|---------|------|-------------|--------|
+| `operationMode` | string | Operating mode | `off`, `cool`, `heat`, `dry`, `vent`, `auto` |
+| `spCool` | float | Cooling setpoint | Temperature in Celsius |
+| `spHeat` | float | Heating setpoint | Temperature in Celsius |
+| `spAuto` | float | Auto mode setpoint | Temperature in Celsius |
+| `power` | int | Power state | `0` (off), `1` (on) |
+| `fanSpeed` | string | Fan speed | See [Fan Speeds](#fan-speeds) |
+| `airDirection` | string | Air direction/vane | See [Air Directions](#air-directions) |
+
+### Command Examples
+
+**Change mode (with setpoints):**
+```json
+{
+  "deviceSerial": "<device_serial>",
+  "commands": {
+    "operationMode": "cool",
+    "spCool": 24.5,
+    "spHeat": 18.5
+  }
+}
+```
+
+**Change fan speed only:**
+```json
+{
+  "deviceSerial": "<device_serial>",
+  "commands": {
+    "fanSpeed": "powerful"
+  }
+}
+```
+
+**Change air direction only:**
+```json
+{
+  "deviceSerial": "<device_serial>",
+  "commands": {
+    "airDirection": "swing"
+  }
+}
+```
+
+---
+
+## Notifications
+
+### Get Unseen Count
+
+**GET** `/v3/notifications/unseen-count`
+
+Returns count of unseen notifications.
+
+**Response:**
+```json
+{
+  "count": 0
+}
+```
+
+---
+
+## Comfort Settings
+
+### Get Comfort Setting Presets
+
+**GET** `/v3/comfort-settings/presets?season={season}`
+
+Returns comfort setting presets for a season.
+
+**Parameters:**
+- `season`: `winter` or `summer`
+
+---
+
+## Real-Time Updates (Socket.IO)
+
+The Kumo Cloud app uses Socket.IO for real-time device status updates.
+
+### Connection Details
+
+**URL:** `https://socket-prod.kumocloud.com`
+
+**Protocol:** Engine.IO v4
+
+### Handshake Flow
+
+1. **Initial polling request:**
+   ```
+   GET /socket.io/?EIO=4&transport=polling&t={timestamp}
+   Authorization: Bearer <access_token>
+   ```
+
+   **Response:**
+   ```json
+   {"sid":"<session_id>","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":20000,"maxPayload":1000000}
+   ```
+
+2. **Connect to namespace:**
+   ```
+   POST /socket.io/?EIO=4&transport=polling&t={timestamp}&sid={sid}
+   Body: 40
+   ```
+
+3. **Upgrade to WebSocket** (optional):
+   ```
+   wss://socket-prod.kumocloud.com/socket.io/?EIO=4&transport=websocket&sid={sid}
+   ```
+
+### Subscribe to Device Status
+
+**Request:**
+```
+42["device_status_v2","<device_serial>"]
+```
+
+**Response:**
+```json
+["device_status_v2",{
+  "deviceSerial": "<device_serial>",
+  "status": "connected",
+  "lastTimeConnected": "<iso_timestamp>",
+  "serverId": "<server_id>",
+  "lastDisconnectedReason": "WEBSOCKET_CLOSED",
+  "lastTimeDisconnected": "<iso_timestamp>",
+  "hasIduCommunicationError": "false",
+  "date": "<iso_timestamp>"
+}]
+```
+
+---
+
+## Data Reference
+
+### Temperature Units
+
+All API temperatures are in **Celsius**. Convert for display:
+
+```python
+def celsius_to_fahrenheit(c):
+    return round((c * 9 / 5) + 32, 1)
+
+def fahrenheit_to_celsius(f):
+    return round((f - 32) * 5 / 9, 1)
+```
+
+### Operating Modes
+
+| Mode | API Value | Description |
+|------|-----------|-------------|
+| Off | `off` | Unit powered off |
+| Cool | `cool` | Cooling mode |
+| Heat | `heat` | Heating mode |
+| Dry | `dry` | Dehumidification mode |
+| Fan | `vent` | Fan only, no heating/cooling |
+| Auto | `auto` | Automatic mode switching |
+
+### Fan Speeds
+
+| Speed | API Value |
+|-------|-----------|
+| Super Quiet | `superQuiet` |
+| Quiet | `quiet` |
+| Low | `low` |
+| Powerful | `powerful` |
+| Super Powerful | `superPowerful` |
+| Auto | `auto` |
+
+### Air Directions
+
+| Direction | API Value |
+|-----------|-----------|
+| Auto | `auto` |
+| Horizontal | `horizontal` |
+| Mid-Horizontal | `midhorizontal` |
+| Mid-Point | `midpoint` |
+| Mid-Vertical | `midvertical` |
+| Vertical | `vertical` |
+| Swing | `swing` |
+
+### Device Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `roomTemp` | float | Current room temperature (°C) |
+| `spCool` | float | Cooling setpoint (°C) |
+| `spHeat` | float | Heating setpoint (°C) |
+| `spAuto` | float | Auto mode setpoint (°C) |
+| `humidity` | int | Current humidity (%) |
+| `operationMode` | string | Current operating mode |
+| `previousOperationMode` | string | Previous operating mode |
+| `fanSpeed` | string | Current fan speed |
+| `airDirection` | string | Current air direction |
+| `power` | int | Power state (0=off, 1=on) |
+| `connected` | bool | Device online status |
+| `rssi` | int | WiFi signal strength (dBm) |
+| `hasSensor` | bool | Has external sensor |
+| `hasMhk2` | bool | Has MHK2 wall controller |
+| `isHeadless` | bool | Headless mode |
+| `isSimulator` | bool | Simulator device |
+| `scheduleOwner` | string | Schedule owner (adapter/cloud) |
+| `scheduleHoldEndTime` | int | Schedule hold end timestamp |
+| `lastStatusChangeAt` | string | ISO timestamp of last change |
+
+### Model Information
+
+| Field | Description |
+|-------|-------------|
+| `modelNumber` | Model number |
+| `serialNumber` | Unit serial number |
+| `family` | Product family (MSZ, SVZ, etc.) |
+| `isDuctless` | Wall-mounted vs ducted |
+| `frontendAnimation` | UI animation type ("fs", "ducted") |
+
+---
+
+## Rate Limiting
+
+The API enforces rate limiting:
+
+| Header | Description |
+|--------|-------------|
+| `x-ratelimit-limit` | Maximum requests allowed (50) |
+| `x-ratelimit-remaining` | Remaining requests |
+| `x-ratelimit-reset` | Unix timestamp when limit resets |
+
+Typical limit: **50 requests per minute**
+
+---
+
+## Error Handling
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| 200 | Success |
+| 304 | Not Modified (cached response valid) |
+| 400 | Bad request - invalid parameters |
+| 401 | Unauthorized - token expired or invalid |
+| 404 | Resource not found |
+| 429 | Rate limit exceeded |
+| 500 | Server error |
+
+### Error Response Format
+
+```json
+{
+  "error": "kumoStationNotFound"
+}
+```
+
+### Token Refresh Flow
+
+1. Make request with access token
+2. If 401 response, refresh token using `/v3/refresh`
+3. Retry original request with new access token
+4. If refresh fails, re-authenticate with `/v3/login`
+
+---
+
+## Notes
+
+- **Caching:** The API supports ETag/If-None-Match for caching
+- **Local API:** Devices also support a local HTTP API (not documented here)
+- **Protocol:** API supports HTTP/2 for improved performance
+
+---
+
+## Acknowledgments
+
+Thanks to [pykumo](https://github.com/dlarrick/pykumo) and the community around it for getting started with the basics for the v3 API.
