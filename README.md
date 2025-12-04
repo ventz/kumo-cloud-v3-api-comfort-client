@@ -57,6 +57,9 @@ uv sync
 
 # Or with pip
 pip install httpx[http2] python-dotenv
+
+# Optional: Install Socket.IO for real-time data refresh
+pip install python-socketio[client]
 ```
 
 ## Configuration
@@ -125,11 +128,64 @@ uv run python app.py status
 # Verbose - includes fan, vane, RSSI, MHK2 info
 uv run python app.py status -v
 
+# Fresh data from devices (bypasses server cache - requires python-socketio)
+uv run python app.py status -r
+
+# Verbose + fresh data (most accurate)
+uv run python app.py status -v -r
+
 # JSON output
 uv run python app.py status --json
 ```
 
-**Example Output:**
+> **Important: Stale vs Fresh Data**
+>
+> The Kumo Cloud REST API returns **cached server-side data** that may be minutes or hours old.
+> When you adjust the MHK2 thermostat, the API may still show the old setpoint until the
+> server cache updates. Use `-r/--refresh` to get **real-time data directly from devices**.
+
+**Example - Without Refresh (may show stale data):**
+```
+% python app.py status
+
+======================================================================
+KUMO CLOUD DEVICE STATUS
+======================================================================
+
+Site: My Home
+--------------------------------------------------
+  Downstairs   [ON] Room: 66.2F | Set: 70.7F (heat another: 4.5F) | Mode: heat | Humidity: 35%
+  Upstairs     [ON] Room: 70.7F | Set: 68.0F (too hot by: 2.7F) | Mode: heat | Humidity: 34%
+======================================================================
+```
+⚠️ **Problem:** Downstairs shows `Set: 70.7F` but the thermostat was already changed to 68°F!
+
+**Example - With Refresh (accurate real-time data):**
+```
+% python app.py status -r
+
+======================================================================
+KUMO CLOUD DEVICE STATUS (REFRESHED)
+======================================================================
+
+Site: My Home
+--------------------------------------------------
+  Downstairs   [ON] Room: 68.0F | Set: 68.0F (at target) | Mode: heat | Fan: auto | Vane: auto | Humidity: 35%
+  Upstairs     [ON] Room: 70.7F | Set: 68.0F (too hot by: 2.7F) | Mode: heat | Fan: auto | Vane: vertical | Humidity: 34%
+======================================================================
+```
+✅ **Fixed:** Downstairs now correctly shows `Set: 68.0F` - the actual thermostat value!
+
+**Key Differences:**
+| Aspect | Without `-r` | With `-r` |
+|--------|--------------|-----------|
+| Data source | Server cache | Direct from device |
+| Accuracy | May be stale | Real-time |
+| Fan/Vane info | Not included | Included |
+| Speed | Faster | Slightly slower (~5s) |
+| Requires | Nothing extra | `python-socketio[client]` |
+
+**Example Output (Verbose):**
 ```
 ======================================================================
 KUMO CLOUD DEVICE STATUS
@@ -221,6 +277,10 @@ with KumoCloudClient() as client:
     # Get all devices with full info (includes fan/vane, extra API calls per device)
     devices = client.get_all_devices(full=True)
 
+    # Get all devices with fresh data from devices (requires python-socketio)
+    # This bypasses server cache and gets actual current values
+    devices = client.get_all_devices(refresh=True)
+
     for d in devices:
         print(f"{d.name}: {d.room_temp}F (set: {d.set_temp}F)")
         print(f"  Mode: {d.mode}, Fan: {d.fan_speed}, Vane: {d.air_direction}")
@@ -230,6 +290,9 @@ with KumoCloudClient() as client:
     bedroom = client.get_device_by_name("bedroom")
     if bedroom:
         print(f"Bedroom is {'ON' if bedroom.is_on else 'OFF'} at {bedroom.room_temp}F")
+
+    # Get device with fresh data (bypasses server cache)
+    bedroom = client.get_device_by_name("bedroom", refresh=True)
 
     # Get serial from friendly name
     serial = client.get_serial_by_name("bedroom")
@@ -307,12 +370,14 @@ with KumoCloudClient() as client:
 #### Devices
 | Method | Description |
 |--------|-------------|
-| `get_all_devices(site_id, full)` | All devices with status |
+| `get_all_devices(site_id, full, refresh)` | All devices with status |
 | `get_device(serial)` | Full device info |
 | `get_device_status(serial)` | Device configuration |
 | `get_device_profile(serial)` | Device capabilities |
-| `get_device_by_name(name)` | Device by friendly name |
+| `get_device_by_name(name, refresh)` | Device by friendly name |
 | `get_serial_by_name(name)` | Resolve name to serial |
+| `force_device_refresh(serial)` | Force fresh data via Socket.IO |
+| `get_fresh_device_status(serial)` | Get fresh data (Socket.IO + fallback) |
 
 #### Control
 | Method | Description |
@@ -413,6 +478,25 @@ The API allows 50 requests per minute. If you hit limits, wait and retry. Header
 - `x-ratelimit-limit`: 50
 - `x-ratelimit-remaining`: requests left
 - `x-ratelimit-reset`: reset timestamp
+
+### Stale/Incorrect Temperature Data
+
+The Kumo Cloud API may return cached values from the server. If you change the temperature
+on the MHK2 thermostat and the API still shows the old value, use the refresh option:
+
+```bash
+# CLI - use -r/--refresh flag
+uv run python app.py status -r
+
+# Python - use refresh=True parameter
+devices = client.get_all_devices(refresh=True)
+bedroom = client.get_device_by_name("bedroom", refresh=True)
+```
+
+This uses Socket.IO to send `force_adapter_request` events that force devices to report
+their actual current state, bypassing the server cache.
+
+**Requirements:** `pip install python-socketio[client]`
 
 ### Missing Fan/Vane Data
 

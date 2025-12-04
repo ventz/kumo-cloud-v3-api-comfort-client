@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,8 +18,17 @@ from pathlib import Path
 import httpx
 import os
 
+# Optional Socket.IO support for real-time data
+try:
+    import socketio
+    HAS_SOCKETIO = True
+except ImportError:
+    HAS_SOCKETIO = False
+    socketio = None
+
 
 BASE_URL = "https://app-prod.kumocloud.com"
+SOCKET_URL = "https://socket-prod.kumocloud.com"
 APP_VERSION = "3.2.3"
 
 # User-Agent from Kumo Cloud iOS app (captured via mitmproxy)
@@ -31,6 +42,9 @@ DEFAULT_HEADERS = {
     "app-env": "prd",
     "Content-Type": "application/json",
     "User-Agent": USER_AGENT,
+    # Disable caching to get fresh data from the server
+    "Cache-Control": "no-cache, no-store",
+    "x-allow-cache": "false",
 }
 
 TOKEN_FILE = Path.home() / ".kumo_tokens.json"
@@ -211,6 +225,11 @@ class KumoCloudClient:
         )
         self._load_tokens()
 
+        # Socket.IO client for real-time updates (optional)
+        self._sio: "socketio.Client | None" = None
+        self._device_updates: dict[str, dict] = {}
+        self._update_events: dict[str, threading.Event] = {}
+
     def _load_serials_from_env(self) -> dict[str, str]:
         """Load device serials from environment variables (KUMO_SERIAL_*)."""
         serials = {}
@@ -359,6 +378,124 @@ class KumoCloudClient:
         self.tokens = TokenInfo.from_response(data)
         self._save_tokens()
 
+    # ========== Socket.IO Real-Time Support ==========
+
+    def _connect_socketio(self) -> bool:
+        """
+        Connect to the Socket.IO server for real-time updates.
+
+        Returns:
+            True if connected successfully, False otherwise.
+        """
+        if not HAS_SOCKETIO:
+            return False
+
+        if self._sio is not None and self._sio.connected:
+            return True
+
+        self._ensure_authenticated()
+
+        try:
+            self._sio = socketio.Client(logger=False, engineio_logger=False)
+
+            # Set up event handlers
+            @self._sio.on("device_update")
+            def on_device_update(data):
+                serial = data.get("deviceSerial")
+                if serial:
+                    self._device_updates[serial] = data
+                    if serial in self._update_events:
+                        self._update_events[serial].set()
+
+            @self._sio.on("connect")
+            def on_connect():
+                pass
+
+            # Connect with auth token
+            self._sio.connect(
+                SOCKET_URL,
+                auth={"token": self.tokens.access},
+                headers={"Authorization": f"Bearer {self.tokens.access}"},
+                transports=["websocket", "polling"],
+            )
+
+            return self._sio.connected
+        except Exception:
+            self._sio = None
+            return False
+
+    def _disconnect_socketio(self) -> None:
+        """Disconnect from Socket.IO server."""
+        if self._sio is not None:
+            try:
+                self._sio.disconnect()
+            except Exception:
+                pass
+            self._sio = None
+
+    def force_device_refresh(self, device_serial: str, timeout: float = 5.0) -> dict | None:
+        """
+        Force a device to report its current status via Socket.IO.
+
+        This sends force_adapter_request events to get fresh data directly
+        from the device, bypassing the server cache.
+
+        Args:
+            device_serial: Device serial number
+            timeout: Max seconds to wait for response
+
+        Returns:
+            Fresh device data dict, or None if Socket.IO unavailable/timeout.
+        """
+        if not HAS_SOCKETIO:
+            return None
+
+        if not self._connect_socketio():
+            return None
+
+        try:
+            # Clear any previous update for this device
+            self._device_updates.pop(device_serial, None)
+            event = threading.Event()
+            self._update_events[device_serial] = event
+
+            # Subscribe to device updates
+            self._sio.emit("subscribe", device_serial)
+
+            # Send force_adapter_request events (as the mobile app does)
+            for request_type in ["iuStatus", "profile", "adapterStatus", "mhk2"]:
+                self._sio.emit("force_adapter_request", (device_serial, request_type))
+
+            # Wait for device_update response
+            if event.wait(timeout=timeout):
+                return self._device_updates.get(device_serial)
+            return None
+        except Exception:
+            return None
+        finally:
+            self._update_events.pop(device_serial, None)
+
+    def get_fresh_device_status(self, device_serial: str) -> dict | None:
+        """
+        Get fresh device status, using Socket.IO if available.
+
+        First attempts to get real-time data via Socket.IO force_adapter_request.
+        Falls back to REST API if Socket.IO is unavailable.
+
+        Args:
+            device_serial: Device serial number
+
+        Returns:
+            Device status dict with current values.
+        """
+        # Try Socket.IO first for fresh data
+        fresh_data = self.force_device_refresh(device_serial)
+        if fresh_data:
+            return fresh_data
+
+        # Fall back to REST API (may have cached data)
+        return self.get_device(device_serial)
+
     # ========== Account ==========
 
     def get_account(self) -> dict:
@@ -490,7 +627,12 @@ class KumoCloudClient:
 
     # ========== High-Level Methods ==========
 
-    def get_all_devices(self, site_id: str | None = None, full: bool = False) -> list[DeviceStatus]:
+    def get_all_devices(
+        self,
+        site_id: str | None = None,
+        full: bool = False,
+        refresh: bool = False,
+    ) -> list[DeviceStatus]:
         """
         Get status of all devices across all sites (or specific site).
 
@@ -498,6 +640,9 @@ class KumoCloudClient:
             site_id: Optional site ID. Uses KUMO_SITE_ID from env if not provided.
             full: If True, fetch full device data including fan speed and air direction.
                   This makes additional API calls per device but provides complete info.
+            refresh: If True, use Socket.IO to force devices to report fresh status.
+                     This bypasses server cache and gets actual current values from
+                     the thermostats. Requires python-socketio package.
 
         Returns:
             List of DeviceStatus objects with current state.
@@ -524,8 +669,18 @@ class KumoCloudClient:
                 if not device_serial:
                     continue
 
+                # Use Socket.IO refresh if requested (gets fresh data from device)
+                if refresh:
+                    fresh_data = self.force_device_refresh(device_serial)
+                    if fresh_data:
+                        merged_data = {**adapter, **fresh_data}
+                    elif full:
+                        device_data = self.get_device(device_serial)
+                        merged_data = {**adapter, **device_data}
+                    else:
+                        merged_data = adapter
                 # Optionally fetch full device data (includes fan/vane)
-                if full:
+                elif full:
                     device_data = self.get_device(device_serial)
                     # Merge zone adapter data with device data (device has more fields)
                     merged_data = {**adapter, **device_data}
@@ -575,7 +730,7 @@ class KumoCloudClient:
 
         return None
 
-    def get_device_by_name(self, name: str) -> DeviceStatus | None:
+    def get_device_by_name(self, name: str, refresh: bool = False) -> DeviceStatus | None:
         """
         Get device status by name (e.g., "upstairs", "downstairs").
 
@@ -583,6 +738,8 @@ class KumoCloudClient:
 
         Args:
             name: Device/zone name like "upstairs" or "downstairs"
+            refresh: If True, use Socket.IO to force device to report fresh status.
+                     This bypasses server cache and gets actual current values.
 
         Returns:
             DeviceStatus or None if not found.
@@ -603,10 +760,20 @@ class KumoCloudClient:
             for zone in zones:
                 adapter = zone.get("adapter", {})
                 if adapter.get("deviceSerial") == serial:
+                    # Use Socket.IO refresh if requested
+                    if refresh:
+                        fresh_data = self.force_device_refresh(serial)
+                        if fresh_data:
+                            merged_data = {**adapter, **fresh_data}
+                        else:
+                            merged_data = adapter
+                    else:
+                        merged_data = adapter
+
                     return self._parse_device_status(
                         serial,
                         zone.get("name", name),
-                        adapter,
+                        merged_data,
                     )
 
         return None
@@ -835,14 +1002,19 @@ class KumoCloudClient:
         """Get contractor information for a site."""
         return self._request("GET", f"/v3/site/{site_id}/preferable-contractor")
 
-    def print_status(self, verbose: bool = False) -> None:
+    def print_status(self, verbose: bool = False, refresh: bool = False) -> None:
         """Print status of all devices to console.
 
         Args:
             verbose: If True, fetch full device data and show additional info (RSSI, MHK2, fan, vane, etc.)
+            refresh: If True, use Socket.IO to force devices to report fresh status.
+                     This bypasses server cache and gets actual current values.
         """
         print("\n" + "=" * 70)
-        print("KUMO CLOUD DEVICE STATUS")
+        if refresh:
+            print("KUMO CLOUD DEVICE STATUS (REFRESHED)")
+        else:
+            print("KUMO CLOUD DEVICE STATUS")
         print("=" * 70)
 
         # Use configured site_id or fetch all sites
@@ -863,8 +1035,18 @@ class KumoCloudClient:
                 if not device_serial:
                     continue
 
+                # Use Socket.IO refresh if requested (gets fresh data from device)
+                if refresh:
+                    fresh_data = self.force_device_refresh(device_serial)
+                    if fresh_data:
+                        merged_data = {**adapter, **fresh_data}
+                    elif verbose:
+                        device_data = self.get_device(device_serial)
+                        merged_data = {**adapter, **device_data}
+                    else:
+                        merged_data = adapter
                 # Fetch full device data if verbose (includes fan/vane)
-                if verbose:
+                elif verbose:
                     device_data = self.get_device(device_serial)
                     merged_data = {**adapter, **device_data}
                 else:
@@ -896,7 +1078,8 @@ class KumoCloudClient:
         print("\n" + "=" * 70)
 
     def close(self) -> None:
-        """Close the HTTP client."""
+        """Close the HTTP client and Socket.IO connection."""
+        self._disconnect_socketio()
         self._client.close()
 
     def __enter__(self) -> "KumoCloudClient":
@@ -920,6 +1103,8 @@ def main():
         epilog="""
 Examples:
   %(prog)s status                      Show status of all devices
+  %(prog)s status -r                   Show status with fresh data from devices
+  %(prog)s status -v -r                Verbose + fresh data (most accurate)
   %(prog)s status -d SERIAL            Show status of specific device
   %(prog)s set-temp upstairs 72        Set temperature to 72F
   %(prog)s set-temp upstairs 72 -m cool Set cooling to 72F
@@ -931,6 +1116,10 @@ Examples:
   %(prog)s raw zones                   Show raw zones for configured site
   %(prog)s raw device-status SERIAL    Show raw device status
   %(prog)s raw weather                 Show weather for configured site
+
+Note: Use -r/--refresh to get accurate real-time data from devices.
+      Without it, the API may return cached/stale values.
+      Requires: pip install python-socketio[client]
         """,
     )
 
@@ -971,6 +1160,11 @@ Examples:
         "--json",
         action="store_true",
         help="Output as JSON",
+    )
+    status_parser.add_argument(
+        "-r", "--refresh",
+        action="store_true",
+        help="Force refresh from devices via Socket.IO (bypasses server cache, requires python-socketio)",
     )
 
     # Set temperature command
@@ -1065,19 +1259,24 @@ Examples:
                 print(f"Tokens cached to: {args.token_file}")
 
             elif args.command in ("status", "list"):
+                refresh = getattr(args, 'refresh', False)
                 if hasattr(args, 'device') and args.device:
-                    status = client.get_device_status(args.device)
+                    # For specific device, use refresh if requested
+                    if refresh:
+                        status = client.get_fresh_device_status(args.device)
+                    else:
+                        status = client.get_device_status(args.device)
                     if getattr(args, 'json', False):
                         print(json.dumps(status, indent=2))
                     else:
                         print(json.dumps(status, indent=2))
                 else:
                     if getattr(args, 'json', False):
-                        devices = client.get_all_devices()
+                        devices = client.get_all_devices(refresh=refresh)
                         print(json.dumps([d.raw_data for d in devices], indent=2))
                     else:
                         verbose = getattr(args, 'verbose', False)
-                        client.print_status(verbose=verbose)
+                        client.print_status(verbose=verbose, refresh=refresh)
 
             elif args.command == "set-temp":
                 # Resolve device name to serial if needed

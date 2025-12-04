@@ -690,6 +690,109 @@ The Kumo Cloud app uses Socket.IO for real-time device status updates.
 }]
 ```
 
+### Subscribe to Device Updates
+
+**Request:**
+```
+42["subscribe","<device_serial>"]
+```
+
+**Response:**
+```
+42["subscribed","Successfully subscribed to: <device_serial>"]
+```
+
+After subscribing, you'll receive `device_update` events when the device status changes.
+
+### Force Device Refresh (Important!)
+
+The REST API may return **cached/stale data** from the server. To get accurate real-time
+values directly from the device, use the `force_adapter_request` event.
+
+**Important:** The mobile app uses this mechanism to ensure the UI shows current values.
+Without it, temperature changes made on the MHK2 thermostat may not reflect in API responses.
+
+**Request Types:**
+- `iuStatus` - Indoor unit status (temperatures, setpoints, mode)
+- `profile` - Device capabilities
+- `adapterStatus` - Adapter/WiFi module status
+- `mhk2` - MHK2 thermostat status (if applicable)
+
+**Send Request:**
+```
+42["force_adapter_request","<device_serial>","iuStatus"]
+42["force_adapter_request","<device_serial>","profile"]
+42["force_adapter_request","<device_serial>","adapterStatus"]
+42["force_adapter_request","<device_serial>","mhk2"]
+```
+
+**Response (via `device_update` event):**
+```json
+["device_update",{
+  "deviceSerial": "<device_serial>",
+  "rssi": -45,
+  "roomTemp": 19,
+  "operationMode": "heat",
+  "power": 1,
+  "spCool": 22,
+  "spHeat": 21.5,
+  "spAuto": null,
+  "airDirection": "auto",
+  "fanSpeed": "auto",
+  "humidity": 35,
+  "connected": true,
+  "scheduleOwner": "adapter",
+  "scheduleHoldEndTime": 0,
+  "displayConfig": {
+    "filter": false,
+    "defrost": false,
+    "hotAdjust": true,
+    "standby": false
+  },
+  "date": "<iso_timestamp>"
+}]
+```
+
+### Socket.IO Event Types
+
+| Event | Direction | Description |
+|-------|-----------|-------------|
+| `subscribe` | Client → Server | Subscribe to updates for a device |
+| `device_update` | Server → Client | Device status/settings changed |
+| `device_status_v2` | Both | Connection status query/response |
+| `force_adapter_request` | Client → Server | Force device to report current state |
+| `profile_update` | Server → Client | Device capabilities update |
+| `adapter_update` | Server → Client | Adapter/WiFi module update |
+
+### Python Socket.IO Example
+
+```python
+import socketio
+
+sio = socketio.Client()
+
+@sio.on("device_update")
+def on_device_update(data):
+    print(f"Device {data['deviceSerial']}: {data['roomTemp']}°C, spHeat={data['spHeat']}")
+
+# Connect with auth
+sio.connect(
+    "https://socket-prod.kumocloud.com",
+    auth={"token": access_token},
+    headers={"Authorization": f"Bearer {access_token}"},
+)
+
+# Subscribe and force refresh
+device_serial = "YOUR_DEVICE_SERIAL"
+sio.emit("subscribe", device_serial)
+sio.emit("force_adapter_request", (device_serial, "iuStatus"))
+
+# Wait for response, then disconnect
+import time
+time.sleep(3)
+sio.disconnect()
+```
+
 ---
 
 ## Data Reference
