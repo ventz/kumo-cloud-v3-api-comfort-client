@@ -58,11 +58,27 @@ ENV_SERIAL_PREFIX = "KUMO_SERIAL_"
 
 # ========== Temperature Conversion ==========
 
-def celsius_to_fahrenheit(c: float | None) -> float | None:
-    """Convert Celsius to Fahrenheit."""
+def celsius_to_fahrenheit(c: float | None) -> int | None:
+    """Convert Celsius to Fahrenheit using Mitsubishi thermostat rounding rules.
+
+    The thermostat uses inverted rounding:
+    - If fractional part < 0.5: round UP
+    - If fractional part >= 0.5: round DOWN
+    - If exact integer: no rounding needed
+    """
     if c is None:
         return None
-    return round((c * 9 / 5) + 32, 1)
+
+    fahrenheit = (c * 9 / 5) + 32
+    integer_part = int(fahrenheit)
+    fractional_part = fahrenheit - integer_part
+
+    if fractional_part == 0:
+        return integer_part
+    elif fractional_part < 0.5:
+        return integer_part + 1  # Round up
+    else:
+        return integer_part  # Round down
 
 
 def fahrenheit_to_celsius(f: float | None) -> float | None:
@@ -121,10 +137,10 @@ class DeviceStatus:
     """Represents the status of a Kumo device (indoor unit)."""
     serial: str
     name: str
-    room_temp: float | None = None
-    set_temp: float | None = None
-    sp_cool: float | None = None  # Cooling setpoint (F)
-    sp_heat: float | None = None  # Heating setpoint (F)
+    room_temp: int | None = None
+    set_temp: int | None = None
+    sp_cool: int | None = None  # Cooling setpoint (F)
+    sp_heat: int | None = None  # Heating setpoint (F)
     mode: str | None = None  # off, cool, heat, dry, vent, auto
     fan_speed: str | None = None  # superQuiet, quiet, low, powerful, superPowerful, auto
     air_direction: str | None = None  # auto, horizontal, midhorizontal, midpoint, midvertical, vertical, swing
