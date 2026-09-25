@@ -1,5 +1,14 @@
 # Kumo Cloud API Client
 
+> [!IMPORTANT]
+> **This repository is archived. Development has moved — and v4 is out.**
+> Continued work, the updated client, and full **v3 + v4** API documentation (schedules,
+> device control, per-zone notifications, and the Socket.IO/WebSocket protocol) now live at:
+>
+> ### 👉 https://github.com/ventz/mitsubishi-comfort-api-kumo
+>
+> This repo remains as a read-only snapshot of the original v3 client.
+
 A Python client for the Mitsubishi Kumo Cloud API v3. Control your minisplits and ducted units from anywhere via the cloud API.
 
 ## Overview
